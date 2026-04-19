@@ -1,119 +1,118 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { BackgroundEffects } from './components/BackgroundEffects';
 import { ChatHeader } from './components/ChatHeader';
 import { ChatInput } from './components/ChatInput';
 import { MessageList } from './components/MessageList';
 import { SessionSidebar } from './components/SessionSidebar';
-import type { ChatMessage } from './types/chat';
+import type { ChatMessage, ChatSession } from './types/chat';
 
-// 这一课的核心变化不是 UI，而是消息更新方式：
-// assistant 回复不再一次性塞进列表，而是按片段逐步累加。
-const initialSessions = [
-  { id: 'streaming', name: '流式输出' },
-  { id: 'transport', name: 'SSE 事件格式' },
-  { id: 'next-step', name: '下一课：分层架构' },
-];
-
-// 把流式分片追加到同一条 assistant 消息上，
-// 这样页面呈现出来的就是“同一个气泡在持续增长”。
-function appendAssistantMessage(messages: ChatMessage[], messageId: string, delta: string): ChatMessage[] {
+function ensureAssistantMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
   const existing = messages.find((message) => message.id === messageId);
-  if (!existing) {
-    return [...messages, { id: messageId, role: 'assistant', content: delta }];
-  }
+  if (existing) return messages;
+  return [...messages, { id: messageId, role: 'assistant', content: '', loading: true }];
+}
 
-  return messages.map((message) =>
-    message.id === messageId ? { ...message, content: `${message.content}${delta}` } : message
+// 仍然沿用前面几课的流式拼接方式；
+// 这一课新增的重点是 thread 与 sessions 两份状态。
+function appendAssistantMessage(messages: ChatMessage[], messageId: string, delta: string): ChatMessage[] {
+  const withPlaceholder = ensureAssistantMessage(messages, messageId);
+  return withPlaceholder.map((message) =>
+    message.id === messageId ? { ...message, content: `${message.content}${delta}`, loading: false } : message
   );
+}
+
+function finishAssistantMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
+  return messages.map((message) => (message.id === messageId ? { ...message, loading: false } : message));
+}
+
+function createUserMessage(content: string): ChatMessage {
+  return { id: `user-${Date.now()}`, role: 'user', content, loading: false };
+}
+
+function createErrorMessage(content: string): ChatMessage {
+  return { id: `assistant-error-${Date.now()}`, role: 'assistant', content, loading: false };
+}
+
+interface StreamEventPayload {
+  id?: string;
+  delta?: string;
+  threadId?: string;
+  sessions?: ChatSession[];
 }
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // `sessions` 驱动左侧历史会话列表。
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  // `threadId` 标记当前正在查看/回复的是哪一个线程。
+  const [threadId, setThreadId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const sessions = useMemo(() => initialSessions, []);
+
+  async function loadThread(nextThreadId: string) {
+    // 切换侧边栏会话时，从服务端拉回该线程的完整消息历史。
+    const response = await fetch(`/api/chat?thread_id=${nextThreadId}`);
+    if (!response.ok) return;
+    const data = (await response.json()) as { threadId?: string; messages?: ChatMessage[]; sessions?: ChatSession[] };
+    if (typeof data.threadId === 'string') setThreadId(data.threadId);
+    setMessages(Array.isArray(data.messages) ? data.messages : []);
+    setSessions(Array.isArray(data.sessions) ? data.sessions : []);
+  }
 
   async function sendMessage(content: string) {
-    const userMessage: ChatMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content,
-    };
-
-    const history = [...messages];
-    const nextMessages = [...history, userMessage];
-    setMessages(nextMessages);
+    const userMessage = createUserMessage(content);
+    setMessages((current) => [...current, userMessage]);
     setIsLoading(true);
 
     try {
-      // 请求方式和第二课类似，但服务端这次返回的是 SSE 数据流。
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: content,
-          messages: history,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content, threadId }),
       });
-
-      if (!response.ok || !response.body) {
-        throw new Error('流式聊天请求失败');
-      }
-
-      // `ReadableStream` 读取器让前端可以逐块消费服务端推送的内容。
+      if (!response.ok || !response.body) throw new Error('流式聊天请求失败');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      // `buffer` 用于拼接可能被切断的半条 SSE 事件。
       let buffer = '';
-      let assistantId = '';
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
+        if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        // SSE 以空行分隔事件，所以这里按 `\n\n` 切分。
         const events = buffer.split('\n\n');
         buffer = events.pop() ?? '';
-
         for (const rawEvent of events) {
           const lines = rawEvent.split('\n');
           const eventName = lines.find((line) => line.startsWith('event:'))?.replace('event:', '').trim();
           const dataLine = lines.find((line) => line.startsWith('data:'))?.replace('data:', '').trim();
+          if (!eventName || !dataLine) continue;
+          const payload = JSON.parse(dataLine) as StreamEventPayload;
 
-          if (!eventName || !dataLine) {
-            continue;
+          if (eventName === 'session.start') {
+            // 第六课新增：流式开始前先同步线程信息与会话列表。
+            if (payload.threadId) setThreadId(payload.threadId);
+            if (payload.sessions) setSessions(payload.sessions);
           }
-
-          const payload = JSON.parse(dataLine) as { id: string; delta?: string };
-
-          // `message.start` 只负责告诉前端后续 assistant 消息的稳定 id。
-          if (eventName === 'message.start') {
-            assistantId = payload.id;
+          if (eventName === 'message.start' && payload.id) {
+            const messageId = payload.id;
+            setMessages((current) => ensureAssistantMessage(current, messageId));
           }
-
-          // 真正的打字机效果来自 `message.delta` 事件。
-          if (eventName === 'message.delta') {
-            assistantId = payload.id;
-            setMessages((current) => appendAssistantMessage(current, payload.id, payload.delta ?? ''));
+          if (eventName === 'message.delta' && payload.id) {
+            const messageId = payload.id;
+            setMessages((current) => appendAssistantMessage(current, messageId, payload.delta ?? ''));
+          }
+          if (eventName === 'message.end') {
+            if (payload.id) {
+              const messageId = payload.id;
+              setMessages((current) => finishAssistantMessage(current, messageId));
+            }
+            if (payload.sessions) setSessions(payload.sessions);
           }
         }
       }
-
-      if (!assistantId) {
-        throw new Error('未收到流式起始事件');
-      }
     } catch (error) {
-      const fallback: ChatMessage = {
-        id: `assistant-error-${Date.now()}`,
-        role: 'assistant',
-        content: error instanceof Error ? `请求失败：${error.message}` : '请求失败：未知错误',
-      };
+      const fallback = createErrorMessage(error instanceof Error ? `请求失败：${error.message}` : '请求失败：未知错误');
       setMessages((current) => [...current, fallback]);
     } finally {
       setIsLoading(false);
@@ -125,13 +124,23 @@ export default function Home() {
       <BackgroundEffects />
       <div className="tech-grid-bg" />
       <div className="ambient-glow" />
-
-      <SessionSidebar sessions={sessions} activeSessionId="streaming" footerPlan="Streaming" />
-
+      <SessionSidebar
+        sessions={sessions}
+        activeSessionId={threadId}
+        footerPlan="Memory"
+        onSelect={(sessionId) => void loadThread(sessionId)}
+        onNew={() => {
+          setThreadId('');
+          setMessages([]);
+        }}
+      />
       <section className="app-main">
         <ChatHeader />
         <div className="app-content">
           <MessageList messages={messages} onSuggestion={(prompt) => void sendMessage(prompt)} />
+          <div className="architecture-note glass-panel">
+            这一课已经接入真实大模型 API，并使用 LangGraph 的 MemorySaver 通过 thread_id 保存上下文。后续只需要替换 checkpointer，就能平滑升级到数据库。
+          </div>
           <div className="app-input-wrap">
             <ChatInput disabled={isLoading} onSend={sendMessage} />
           </div>

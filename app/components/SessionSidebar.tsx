@@ -1,19 +1,15 @@
 import { Plus, User, Zap } from 'lucide-react';
-
-// 侧边栏主体结构延续第一课，但这里把数据和展示彻底拆开，
-// 为后续接入真实会话列表、选中态和用户状态做准备。
-interface SessionItem {
-  id: string;
-  name: string;
-}
+import type { ChatSession } from '@/app/types/chat';
 
 interface SessionSidebarProps {
-  sessions: SessionItem[];
+  sessions: ChatSession[];
   activeSessionId: string;
   footerPlan: string;
+  onSelect: (sessionId: string) => void;
+  onNew: () => void;
 }
 
-export function SessionSidebar({ sessions, activeSessionId, footerPlan }: SessionSidebarProps) {
+export function SessionSidebar({ sessions, activeSessionId, footerPlan, onSelect, onNew }: SessionSidebarProps) {
   return (
     <aside className="sidebar glass-panel">
       <div className="sidebar-logo">
@@ -27,24 +23,31 @@ export function SessionSidebar({ sessions, activeSessionId, footerPlan }: Sessio
       </div>
 
       <div className="sidebar-action">
-        <button type="button">
+        <button type="button" onClick={onNew}>
           <Plus className="h-4 w-4 text-blue-400" />
           <span>新建对话</span>
         </button>
       </div>
 
-      {/* 会话列表改为完全由 props 驱动，组件本身不再依赖内部硬编码数据。 */}
       <div className="sidebar-list scrollbar-hide">
-        <div className="sidebar-list-title">历史记录</div>
-        {sessions.map((session) => (
-          <div key={session.id} className={`sidebar-session ${session.id === activeSessionId ? 'is-active' : ''}`}>
-            <div className="sidebar-session-indicator" />
-            <span className="sidebar-session-text">{session.name}</span>
-          </div>
-        ))}
+        <div className="sidebar-list-title">记忆会话</div>
+        {sessions.length === 0 ? (
+          <div className="sidebar-session-text">还没有历史对话</div>
+        ) : (
+          sessions.map((session) => (
+            <button
+              key={session.id}
+              type="button"
+              className={`sidebar-session ${session.id === activeSessionId ? 'is-active' : ''}`}
+              onClick={() => onSelect(session.id)}
+            >
+              <div className="sidebar-session-indicator" />
+              <span className="sidebar-session-text">{session.title}</span>
+            </button>
+          ))
+        )}
       </div>
 
-      {/* `footerPlan` 让同一套侧边栏在不同课程里复用时，只需要替换一处标签文案。 */}
       <div className="sidebar-footer">
         <div className="sidebar-user">
           <div className="sidebar-avatar">

@@ -1,10 +1,40 @@
-// 先用一个非常小的角色集合定义课程里的消息类型，
-// 随着课程推进，再逐步补充工具消息、系统消息等更复杂角色。
+import { isBaseMessage, mapStoredMessageToChatMessage, type BaseMessage, type StoredMessage } from '@langchain/core/messages';
+
 export type ChatRole = 'user' | 'assistant';
 
-// 前后端共享这份消息结构，保证页面状态、API 请求和 Agent 输入保持一致。
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
+  loading: boolean;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  updatedAt: string;
+}
+
+function getMessageTextContent(message: BaseMessage) {
+  if (typeof message.content === 'string') return message.content;
+  return message.content
+    .filter((item) => item.type === 'text')
+    .map((item) => item.text)
+    .join('');
+}
+
+function toBaseMessage(message: BaseMessage | StoredMessage) {
+  return isBaseMessage(message) ? message : mapStoredMessageToChatMessage(message);
+}
+
+export function fromLangGraphMessages(messages: Array<BaseMessage | StoredMessage>): ChatMessage[] {
+  return messages
+    .map(toBaseMessage)
+    .filter((message) => message._getType() === 'human' || message._getType() === 'ai')
+    .map((message, index) => ({
+      id: `${message._getType()}-${index}`,
+      role: message._getType() === 'human' ? 'user' : 'assistant',
+      content: getMessageTextContent(message),
+      loading: false,
+    }));
 }

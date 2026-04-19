@@ -9,6 +9,13 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: projectRoot,
   },
+  // 服务端路由里用到的 LangChain 包体积大、依赖多；标成 external 可减少开发时打包/追踪图规模，降低内存与卡顿风险
+  serverExternalPackages: [
+    "@langchain/core",
+    "@langchain/langgraph",
+    "@langchain/openai",
+    "@langchain/google-genai",
+  ],
 };
 
 export default nextConfig;

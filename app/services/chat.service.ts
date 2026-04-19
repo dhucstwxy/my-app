@@ -1,43 +1,53 @@
-import { streamChat } from '@/app/agent/chatbot';
-import type { ChatMessage } from '@/app/types/chat';
+import { getChatApp, streamChat } from '@/app/agent/chatbot';
+import { fromLangGraphMessages } from '@/app/types/chat';
+import { getOrCreateThread, listThreads, touchThread } from './memory.service';
 
-// 第四课把“解析请求”和“组织响应事件”的逻辑从 route 中抽出来，
-// 这是课程里第一次明确建立 service 层。
 export interface ChatRequestPayload {
   message?: string;
-  messages?: ChatMessage[];
+  threadId?: string;
 }
 
 export function parseChatRequest(body: ChatRequestPayload) {
-  // service 层统一做参数归一化，route 不再直接关心这些细节。
   const userMessage = body.message?.trim();
   if (!userMessage) {
     throw new Error('message 不能为空');
   }
 
-  const history = Array.isArray(body.messages) ? body.messages : [];
-  const messages = [...history, { id: `user-${Date.now()}`, role: 'user' as const, content: userMessage }];
-
-  return {
-    userMessage,
-    history,
-    messages,
-  };
+  const threadId = getOrCreateThread(body.threadId, userMessage);
+  return { threadId, userMessage };
 }
 
 export async function* streamChatResponse(payload: ChatRequestPayload) {
-  // route 只需要消费 service 产出的结构化事件，不需要知道内部生成逻辑。
-  const { messages } = parseChatRequest(payload);
+  const { threadId, userMessage } = parseChatRequest(payload);
   const assistantId = `assistant-${Date.now()}`;
 
+  yield { event: 'session.start', data: { threadId, sessions: listThreads() } };
   yield { event: 'message.start', data: { id: assistantId } };
 
-  for await (const chunk of streamChat(messages)) {
+  for await (const chunk of streamChat(userMessage, threadId)) {
     yield { event: 'message.delta', data: { id: assistantId, delta: chunk } };
   }
 
+  touchThread(threadId, userMessage);
+
   yield {
     event: 'message.end',
-    data: { id: assistantId, role: 'assistant' },
+    data: { id: assistantId, role: 'assistant', threadId, sessions: listThreads() },
   };
+}
+
+export async function getChatHistory(threadId: string) {
+  const state = await getChatApp().getState({
+    configurable: { thread_id: threadId },
+  });
+
+  return {
+    threadId,
+    messages: fromLangGraphMessages(state?.values?.messages ?? []),
+    sessions: listThreads(),
+  };
+}
+
+export function getSessions() {
+  return listThreads();
 }

@@ -1,10 +1,9 @@
 import type { Metadata } from 'next';
 import './globals.css';
 
-// 根布局结构没有变化，只更新课程对应的元信息。
 export const metadata: Metadata = {
-  title: '第 02 课：核心对话流',
-  description: '完成用户输入到模型回复的最小闭环。',
+  title: '第 04 课：分层架构',
+  description: '理解为什么项目要拆分为 API、Agent、Service、Database 等层次。',
 };
 
 export default function RootLayout({

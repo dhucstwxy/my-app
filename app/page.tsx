@@ -8,100 +8,131 @@ import { MessageList } from './components/MessageList';
 import { SessionSidebar } from './components/SessionSidebar';
 import type { ChatMessage } from './types/chat';
 
-// 第二课开始，侧边栏不再是完全硬编码在组件内部，
-// 而是提升到页面层管理，为后面接入真实会话状态做准备。
+// 这一课的核心变化不是 UI，而是消息更新方式：
+// assistant 回复不再一次性塞进列表，而是按片段逐步累加。
 const initialSessions = [
-  { id: 'core-flow', name: '核心对话流' },
-  { id: 'source-mapping', name: '源项目映射' },
-  { id: 'next-step', name: '下一课：流式输出' },
+  { id: 'streaming', name: '流式输出' },
+  { id: 'transport', name: 'SSE 事件格式' },
+  { id: 'next-step', name: '下一课：分层架构' },
 ];
 
-// 和第一课相比，这个首页最大的变化是：
-// 页面开始真正管理聊天消息与请求状态，形成前端侧最小闭环。
-export default function Home() {
-  // `messages` 保存当前会话中的所有消息，后续会继续演化成可持久化的会话历史。
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  // `isLoading` 用来锁定输入区，避免用户在回复未完成时重复提交。
-  const [isLoading, setIsLoading] = useState(false);
+// 把流式分片追加到同一条 assistant 消息上，
+// 这样页面呈现出来的就是“同一个气泡在持续增长”。
+function appendAssistantMessage(messages: ChatMessage[], messageId: string, delta: string): ChatMessage[] {
+  const existing = messages.find((message) => message.id === messageId);
+  if (!existing) {
+    return [...messages, { id: messageId, role: 'assistant', content: delta }];
+  }
 
-  // 这里用 `useMemo` 固定初始侧边栏数据，
-  // 体现“页面拥有数据，组件只负责展示”的思路。
+  return messages.map((message) =>
+    message.id === messageId ? { ...message, content: `${message.content}${delta}` } : message
+  );
+}
+
+export default function Home() {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const sessions = useMemo(() => initialSessions, []);
 
-  // `sendMessage` 是第二课最核心的方法：
-  // 它把用户输入串成“本地状态更新 -> 调用 API -> 渲染回复”这一整条链路。
   async function sendMessage(content: string) {
-    // 先在前端构造一条用户消息，立即渲染到页面上，带来即时反馈。
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
       content,
     };
 
-    // `nextMessages` 表示“加上这次用户输入后的消息快照”。
-    // 这样即使后面请求失败，我们也能保留用户已经发送的内容。
-    const nextMessages = [...messages, userMessage];
+    const history = [...messages];
+    const nextMessages = [...history, userMessage];
     setMessages(nextMessages);
     setIsLoading(true);
 
     try {
-      // 把当前输入和历史消息一起发给后端。
-      // 这里是课程里第一次把页面和服务端路由真正连起来。
+      // 请求方式和第二课类似，但服务端这次返回的是 SSE 数据流。
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          // `message` 是当前这一轮用户刚输入的内容。
           message: content,
-          // `messages` 传旧历史即可，服务端会自己把当前用户消息补进去。
-          messages,
+          messages: history,
         }),
       });
 
-      // 显式检查响应状态，避免把服务端错误当作成功结果继续渲染。
-      if (!response.ok) {
-        throw new Error('聊天请求失败');
+      if (!response.ok || !response.body) {
+        throw new Error('流式聊天请求失败');
       }
 
-      // 服务端返回的是已经组装好的 assistant 消息。
-      const data = (await response.json()) as { message: ChatMessage };
-      setMessages([...nextMessages, data.message]);
+      // `ReadableStream` 读取器让前端可以逐块消费服务端推送的内容。
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      // `buffer` 用于拼接可能被切断的半条 SSE 事件。
+      let buffer = '';
+      let assistantId = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        // SSE 以空行分隔事件，所以这里按 `\n\n` 切分。
+        const events = buffer.split('\n\n');
+        buffer = events.pop() ?? '';
+
+        for (const rawEvent of events) {
+          const lines = rawEvent.split('\n');
+          const eventName = lines.find((line) => line.startsWith('event:'))?.replace('event:', '').trim();
+          const dataLine = lines.find((line) => line.startsWith('data:'))?.replace('data:', '').trim();
+
+          if (!eventName || !dataLine) {
+            continue;
+          }
+
+          const payload = JSON.parse(dataLine) as { id: string; delta?: string };
+
+          // `message.start` 只负责告诉前端后续 assistant 消息的稳定 id。
+          if (eventName === 'message.start') {
+            assistantId = payload.id;
+          }
+
+          // 真正的打字机效果来自 `message.delta` 事件。
+          if (eventName === 'message.delta') {
+            assistantId = payload.id;
+            setMessages((current) => appendAssistantMessage(current, payload.id, payload.delta ?? ''));
+          }
+        }
+      }
+
+      if (!assistantId) {
+        throw new Error('未收到流式起始事件');
+      }
     } catch (error) {
-      // 即使请求失败，也要向消息列表追加一条“错误回复”，
-      // 这样界面层依然保持聊天产品的交互语义。
       const fallback: ChatMessage = {
         id: `assistant-error-${Date.now()}`,
         role: 'assistant',
         content: error instanceof Error ? `请求失败：${error.message}` : '请求失败：未知错误',
       };
-      setMessages([...nextMessages, fallback]);
+      setMessages((current) => [...current, fallback]);
     } finally {
-      // 无论成功失败，请求结束后都要解除 loading 状态。
       setIsLoading(false);
     }
   }
 
   return (
     <main className="app-shell">
-      {/* 页面结构仍然沿用第一课的产品骨架，
-          这正好体现“先搭静态壳，再逐步填充行为”的课程设计。 */}
-      {/* 这些背景与装饰层沿用上一课，所以这里只保留轻量注释。 */}
       <BackgroundEffects />
       <div className="tech-grid-bg" />
       <div className="ambient-glow" />
 
-      {/* 侧边栏开始接受外部数据与选中态参数，但仍保持展示层职责。 */}
-      <SessionSidebar sessions={sessions} activeSessionId="core-flow" footerPlan="Core Flow" />
+      <SessionSidebar sessions={sessions} activeSessionId="streaming" footerPlan="Streaming" />
 
       <section className="app-main">
         <ChatHeader />
         <div className="app-content">
-          {/* 消息区负责在“空状态”和“真实消息列表”之间切换。 */}
           <MessageList messages={messages} onSuggestion={(prompt) => void sendMessage(prompt)} />
           <div className="app-input-wrap">
-            {/* 输入区变成真实交互组件，能够提交消息并响应 loading 状态。 */}
             <ChatInput disabled={isLoading} onSend={sendMessage} />
           </div>
         </div>

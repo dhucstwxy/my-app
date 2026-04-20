@@ -20,19 +20,28 @@ export function parseChatRequest(body: ChatRequestPayload) {
 export async function* streamChatResponse(payload: ChatRequestPayload) {
   const { threadId, userMessage } = parseChatRequest(payload);
   const assistantId = `assistant-${Date.now()}`;
+  let latestToolCall = undefined;
 
   yield { event: 'session.start', data: { threadId, sessions: listThreads() } };
   yield { event: 'message.start', data: { id: assistantId } };
 
-  for await (const chunk of streamChat(userMessage, threadId)) {
-    yield { event: 'message.delta', data: { id: assistantId, delta: chunk } };
+  for await (const item of streamChat(userMessage, threadId)) {
+    if (item.type === 'tool') {
+      latestToolCall = item.toolCall;
+      if (item.toolCall) {
+        yield { event: 'tool.call', data: item.toolCall };
+      }
+      continue;
+    }
+
+    yield { event: 'message.delta', data: { id: assistantId, delta: item.delta } };
   }
 
   touchThread(threadId, userMessage);
 
   yield {
     event: 'message.end',
-    data: { id: assistantId, role: 'assistant', threadId, sessions: listThreads() },
+    data: { id: assistantId, role: 'assistant', threadId, sessions: listThreads(), toolCall: latestToolCall },
   };
 }
 

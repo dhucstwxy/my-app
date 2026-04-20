@@ -2,11 +2,19 @@ import { isBaseMessage, mapStoredMessageToChatMessage, type BaseMessage, type St
 
 export type ChatRole = 'user' | 'assistant';
 
+export interface ToolCallRecord {
+  id: string;
+  name: string;
+  args: Record<string, string>;
+  output?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   loading: boolean;
+  toolCalls?: ToolCallRecord[];
 }
 
 export interface ChatSession {

@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { streamChatResponse } from '@/app/services/chat.service';
+import { getChatBootstrap, getChatHistory, streamChatResponse } from '@/app/services/chat.service';
 import { formatSse } from '@/app/utils/sse';
 
-// route 层现在只保留 HTTP 入口职责：
-// 读取请求、写出响应，不再承载业务解析逻辑。
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const encoder = new TextEncoder();
-
     const stream = new ReadableStream({
       async start(controller) {
         for await (const item of streamChatResponse(body)) {
@@ -31,10 +28,15 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const threadId = request.nextUrl.searchParams.get('thread_id');
+  if (threadId) {
+    return NextResponse.json(await getChatHistory(threadId));
+  }
+
   return NextResponse.json({
-    name: 'lesson-04-layered-architecture',
+    name: 'lesson-09-model-switching-and-provider',
     status: 'ok',
-    layers: ['route', 'service', 'agent'],
+    ...getChatBootstrap(),
   });
 }

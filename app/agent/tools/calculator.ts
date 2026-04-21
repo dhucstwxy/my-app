@@ -1,7 +1,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 
-function runCalculator(expression: string) {
+export function runCalculator(expression: string) {
   try {
     const result = Function(`"use strict"; return (${expression})`)();
     return `计算结果: ${expression} = ${result}`;

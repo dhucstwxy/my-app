@@ -1,19 +1,20 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { modelOptions } from './agent/config/models.config';
+import type { ToolOption } from './agent/config/unified-tools.config';
 import { BackgroundEffects } from './components/BackgroundEffects';
 import { ChatHeader } from './components/ChatHeader';
 import { ChatInput } from './components/ChatInput';
 import { MessageList } from './components/MessageList';
+// import { ModelSelector } from './components/ModelSelector';
 import { SessionSidebar } from './components/SessionSidebar';
 import type { ChatMessage, ChatSession, ToolCallRecord } from './types/chat';
+import { getDefaultSelectedToolIds, toggleToolSelection } from './utils/tool-selection';
 
-// 和之前的文本分片不同，工具调用需要附着到某一条 assistant 消息上。
 function appendAssistantMessage(messages: ChatMessage[], messageId: string, delta: string): ChatMessage[] {
   const withPlaceholder = ensureAssistantMessage(messages, messageId);
-  return withPlaceholder.map((message) =>
-    message.id === messageId ? { ...message, content: `${message.content}${delta}`, loading: false } : message
-  );
+  return withPlaceholder.map((message) => message.id === messageId ? { ...message, content: `${message.content}${delta}`, loading: false } : message);
 }
 
 function ensureAssistantMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
@@ -27,25 +28,32 @@ function finishAssistantMessage(messages: ChatMessage[], messageId: string): Cha
 }
 
 function attachToolCall(messages: ChatMessage[], messageId: string, toolCall: ToolCallRecord): ChatMessage[] {
-  return messages.map((message, ) =>
-    message.id === messageId
-      ? { ...message, toolCalls: [...(message.toolCalls ?? []), toolCall] }
-      : message
-  );
+  return messages.map((message) => message.id === messageId ? { ...message, toolCalls: [...(message.toolCalls ?? []), toolCall] } : message);
 }
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [availableTools, setAvailableTools] = useState<ToolOption[]>([]);
+  const [selectedToolIds, setSelectedToolIds] = useState<string[]>([]);
   const [threadId, setThreadId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [modelId, setModelId] = useState(modelOptions[0].id);
+  const [activeModelLabel, setActiveModelLabel] = useState(modelOptions[0].name);
 
-  type StreamEventPayload = {
-    id?: string;
-    delta?: string;
-    threadId?: string;
-    sessions?: ChatSession[];
-  };
+  useEffect(() => {
+    async function loadInitialData() {
+      const response = await fetch('/api/chat');
+      if (!response.ok) return;
+      const data = (await response.json()) as { sessions?: ChatSession[]; tools?: ToolOption[] };
+      const tools = Array.isArray(data.tools) ? data.tools : [];
+      setSessions(Array.isArray(data.sessions) ? data.sessions : []);
+      setAvailableTools(tools);
+      setSelectedToolIds(getDefaultSelectedToolIds(tools));
+    }
+
+    void loadInitialData();
+  }, []);
 
   async function loadThread(nextThreadId: string) {
     const response = await fetch(`/api/chat?thread_id=${nextThreadId}`);
@@ -64,7 +72,7 @@ export default function Home() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, threadId }),
+        body: JSON.stringify({ message: content, threadId, modelId, toolIds: selectedToolIds }),
       });
       if (!response.ok || !response.body) throw new Error('流式聊天请求失败');
       const reader = response.body.getReader();
@@ -82,32 +90,24 @@ export default function Home() {
           const eventName = lines.find((line) => line.startsWith('event:'))?.replace('event:', '').trim();
           const dataLine = lines.find((line) => line.startsWith('data:'))?.replace('data:', '').trim();
           if (!eventName || !dataLine) continue;
-          const payload = JSON.parse(dataLine) as StreamEventPayload | ToolCallRecord;
+          const payload = JSON.parse(dataLine) as any;
           if (eventName === 'session.start') {
-            if ('threadId' in payload && payload.threadId) setThreadId(payload.threadId);
-            if ('sessions' in payload && payload.sessions) setSessions(payload.sessions);
+            if (payload.threadId) setThreadId(payload.threadId);
+            if (payload.sessions) setSessions(payload.sessions);
           }
-          if (eventName === 'message.start' && 'id' in payload && typeof payload.id === 'string') {
+          if (eventName === 'model.selected') setActiveModelLabel(payload.name);
+          if (eventName === 'message.start' && payload.id) {
             activeAssistantId = payload.id;
             setMessages((current) => ensureAssistantMessage(current, activeAssistantId));
           }
-          if (eventName === 'tool.call') {
-            if (!activeAssistantId) continue;
-            setMessages((current) => attachToolCall(current, activeAssistantId, payload as ToolCallRecord));
-          }
-          if (eventName === 'message.delta' && 'id' in payload && typeof payload.id === 'string') {
-            const messageId = payload.id;
-            const delta = 'delta' in payload && typeof payload.delta === 'string' ? payload.delta : '';
-            setMessages((current) => appendAssistantMessage(current, messageId, delta));
-          }
+          if (eventName === 'tool.call' && activeAssistantId) setMessages((current) => attachToolCall(current, activeAssistantId, payload as ToolCallRecord));
+          if (eventName === 'message.delta' && payload.id) setMessages((current) => appendAssistantMessage(current, payload.id, payload.delta ?? ''));
           if (eventName === 'message.end') {
-            if ('id' in payload && typeof payload.id === 'string') {
+            if (payload.id) {
               const messageId = payload.id;
               setMessages((current) => finishAssistantMessage(current, messageId));
             }
-            if ('sessions' in payload && payload.sessions) {
-              setSessions(payload.sessions);
-            }
+            if (payload.sessions) setSessions(payload.sessions);
           }
         }
       }
@@ -124,14 +124,27 @@ export default function Home() {
       <BackgroundEffects />
       <div className="tech-grid-bg" />
       <div className="ambient-glow" />
-      <SessionSidebar sessions={sessions} activeSessionId={threadId} footerPlan="Tools" onSelect={(sessionId) => void loadThread(sessionId)} onNew={() => { setThreadId(''); setMessages([]); }} />
+      <SessionSidebar sessions={sessions} activeSessionId={threadId} footerPlan={activeModelLabel} onSelect={(sessionId) => void loadThread(sessionId)} onNew={() => { setThreadId(''); setMessages([]); }} />
       <section className="app-main">
         <ChatHeader />
         <div className="app-content">
           <MessageList messages={messages} onSuggestion={(prompt) => void sendMessage(prompt)} />
-          <div className="architecture-note glass-panel">这一课已经使用真实大模型进行工具选择。现在可以直接试两类问题：输入数学表达式，或询问当前时间。事件流里会先出现真实工具调用，再出现最终回复。</div>
           <div className="app-input-wrap">
-            <ChatInput disabled={isLoading} onSend={sendMessage} />
+            <ChatInput
+              disabled={isLoading}
+              onSend={sendMessage}
+              tools={availableTools}
+              selectedToolIds={selectedToolIds}
+              onToolToggle={(toolId) => setSelectedToolIds((current) => toggleToolSelection(current, toolId))}
+              onSelectAllTools={() => setSelectedToolIds(getDefaultSelectedToolIds(availableTools))}
+              onClearAllTools={() => setSelectedToolIds([])}
+              modelId={modelId}
+              onModelChange={(value) => {
+                setModelId(value);
+                const nextModel = modelOptions.find((option) => option.id === value);
+                if (nextModel) setActiveModelLabel(nextModel.name);
+              }}
+            />
           </div>
         </div>
       </section>

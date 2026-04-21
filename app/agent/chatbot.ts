@@ -1,13 +1,21 @@
-import { HumanMessage , AIMessage } from '@langchain/core/messages';
+import {
+  AIMessage,
+  HumanMessage,
+  ToolMessage,
+  SystemMessage,
+  isBaseMessage,
+  mapStoredMessageToChatMessage,
+  type BaseMessage,
+  type StoredMessage,
+} from '@langchain/core/messages';
 import { END, MemorySaver, MessagesAnnotation, START, StateGraph } from '@langchain/langgraph';
-import { createModel } from '@/app/agent/utils/models';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
-import { calculatorTool } from '@/app/agent/tools/calculator';
-import { currentTimeTool } from '@/app/agent/tools/current-time';
+import { resolveModel } from '@/app/agent/config/models.config';
+import { createLangChainTools } from '@/app/agent/config/unified-tools.config';
+import { createModel } from '@/app/agent/utils/models';
 import type { ToolCallRecord } from '@/app/types/chat';
 
 const checkpointer = new MemorySaver();
-const tools = [currentTimeTool, calculatorTool];
 
 function shouldContinue(state: typeof MessagesAnnotation.State) {
   const lastMessage = state.messages[state.messages.length - 1];
@@ -20,21 +28,59 @@ function shouldContinue(state: typeof MessagesAnnotation.State) {
   return END;
 }
 
-const workflow = new StateGraph(MessagesAnnotation)
-  .addNode('chatbot', async (state) => {
-    const model = createModel();
-    const response = await model.bindTools(tools).invoke(state.messages);
-    return { messages: [response] };
-  })
-  .addNode('tools', new ToolNode(tools))
-  .addEdge(START, 'chatbot')
-  .addConditionalEdges('chatbot', shouldContinue, {
-    tools: 'tools',
-    [END]: END,
-  })
-  .addEdge('tools', 'chatbot');
+function buildChatApp(modelId?: string, toolIds?: string[]) {
+  const tools = createLangChainTools(toolIds);
 
-const app = workflow.compile({ checkpointer });
+  const workflow = new StateGraph(MessagesAnnotation)
+    .addNode('chatbot', async (state) => {
+      const model = createModel(modelId);
+      const modelMessages = toModelMessages(state.messages);
+      const response = tools.length > 0 ? await model.bindTools(tools).invoke(modelMessages) : await model.invoke(modelMessages);
+      return { messages: [response] };
+    })
+    .addNode('tools', new ToolNode(tools))
+    .addEdge(START, 'chatbot')
+    .addConditionalEdges('chatbot', shouldContinue, {
+      tools: 'tools',
+      [END]: END,
+    })
+    .addEdge('tools', 'chatbot');
+
+  return workflow.compile({ checkpointer });
+}
+
+const appCache = new Map<string, ReturnType<typeof buildChatApp>>();
+
+function getWorkflowKey(modelId?: string, toolIds?: string[]) {
+  const modelKey = modelId || resolveModel().id;
+  const toolKey = !toolIds || toolIds.length === 0 ? '__no_tools__' : [...new Set(toolIds)].sort().join(',');
+  return `${modelKey}::${toolKey}`;
+}
+
+function toBaseMessage(message: unknown): BaseMessage | null {
+  if (isBaseMessage(message)) return message;
+  if (message && typeof message === 'object' && 'lc' in message) {
+    return mapStoredMessageToChatMessage(message as unknown as StoredMessage);
+  }
+  if (!message || typeof message !== 'object') return null;
+  const candidate = message as { role?: string; content?: unknown; tool_call_id?: string; name?: string };
+  const content = typeof candidate.content === 'string' ? candidate.content : '';
+  if (candidate.role === 'user') return new HumanMessage(content);
+  if (candidate.role === 'assistant') return new AIMessage(content);
+  if (candidate.role === 'system') return new SystemMessage(content);
+  if (candidate.role === 'tool') {
+    return new ToolMessage({
+      content,
+      tool_call_id: candidate.tool_call_id || candidate.name || 'tool',
+      name: candidate.name,
+    });
+  }
+  return content ? new HumanMessage(content) : null;
+}
+
+function toModelMessages(messages: unknown[]) {
+  return messages.map(toBaseMessage).filter((message): message is BaseMessage => message !== null);
+}
 
 function normalizeArgs(args: Record<string, unknown> | undefined) {
   const next: Record<string, string> = {};
@@ -62,11 +108,17 @@ function stringifyToolOutput(output: unknown) {
   return JSON.stringify(output);
 }
 
-export function getChatApp() {
-  return app;
+export function getChatApp(modelId?: string, toolIds?: string[]) {
+  const key = getWorkflowKey(modelId, toolIds);
+  const cachedApp = appCache.get(key);
+  if (cachedApp) return cachedApp;
+  const nextApp = buildChatApp(modelId, toolIds);
+  appCache.set(key, nextApp);
+  return nextApp;
 }
 
-export async function* streamChat(message: string, threadId: string) {
+export async function* streamChat(message: string, threadId: string, modelId?: string, toolIds?: string[]) {
+  const app = getChatApp(modelId, toolIds);
   const pendingToolCalls = new Map<string, ToolCallRecord>();
 
   for await (const event of app.streamEvents(

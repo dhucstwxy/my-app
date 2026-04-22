@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { AuthProvider } from './contexts/AuthContext';
 
 export const metadata: Metadata = {
-  title: '第 04 课：分层架构',
-  description: '理解为什么项目要拆分为 API、Agent、Service、Database 等层次。',
+  title: '第 11 课：用户认证',
+  description: '为应用接入用户体系。',
 };
 
 export default function RootLayout({
@@ -13,7 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang='zh-CN'>
-      <body>{children}</body>
+      <body>
+        <AuthProvider>{children}</AuthProvider>
+      </body>
     </html>
   );
 }

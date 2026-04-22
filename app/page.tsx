@@ -1,17 +1,20 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { modelOptions } from './agent/config/models.config';
 import type { ToolOption } from './agent/config/unified-tools.config';
+import { modelOptions } from './agent/config/models.config';
 import { BackgroundEffects } from './components/BackgroundEffects';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { useAuth } from './contexts/AuthContext';
 import { ChatHeader } from './components/ChatHeader';
 import { ChatInput } from './components/ChatInput';
 import { MessageList } from './components/MessageList';
-// import { ModelSelector } from './components/ModelSelector';
 import { SessionSidebar } from './components/SessionSidebar';
-import type { ChatMessage, ChatSession, ToolCallRecord } from './types/chat';
+import type { AttachmentMeta, ChatMessage, ChatSession, ToolCallRecord } from './types/chat';
 import { getDefaultSelectedToolIds, toggleToolSelection } from './utils/tool-selection';
 
+// 主页面的大部分聊天逻辑沿用上一课；
+// 这一课新增的重点是把整页包进认证上下文与受保护路由。
 function appendAssistantMessage(messages: ChatMessage[], messageId: string, delta: string): ChatMessage[] {
   const withPlaceholder = ensureAssistantMessage(messages, messageId);
   return withPlaceholder.map((message) => message.id === messageId ? { ...message, content: `${message.content}${delta}`, loading: false } : message);
@@ -32,6 +35,7 @@ function attachToolCall(messages: ChatMessage[], messageId: string, toolCall: To
 }
 
 export default function Home() {
+  const { user, signOut } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [availableTools, setAvailableTools] = useState<ToolOption[]>([]);
@@ -58,22 +62,19 @@ export default function Home() {
   async function loadThread(nextThreadId: string) {
     const response = await fetch(`/api/chat?thread_id=${nextThreadId}`);
     if (!response.ok) return;
-    const data = (await response.json()) as { threadId?: string; messages?: ChatMessage[]; sessions?: ChatSession[] };
-    if (typeof data.threadId === 'string') setThreadId(data.threadId);
-    setMessages(Array.isArray(data.messages) ? data.messages : []);
-    setSessions(Array.isArray(data.sessions) ? data.sessions : []);
+    const data = (await response.json()) as { threadId: string; messages: ChatMessage[]; sessions: ChatSession[] };
+    setThreadId(data.threadId);
+    setMessages(data.messages);
+    setSessions(data.sessions);
   }
 
-  async function sendMessage(content: string) {
-    const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content, loading: false };
-    setMessages((current) => [...current, userMessage]);
+  async function sendMessage(content: string, attachments: AttachmentMeta[]) {
+    const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content, attachments, loading: false };
+    const history = [...messages];
+    setMessages([...history, userMessage]);
     setIsLoading(true);
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, threadId, modelId, toolIds: selectedToolIds }),
-      });
+      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: content, messages: history, threadId, modelId, attachments, toolIds: selectedToolIds }) });
       if (!response.ok || !response.body) throw new Error('流式聊天请求失败');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -107,6 +108,7 @@ export default function Home() {
               const messageId = payload.id;
               setMessages((current) => finishAssistantMessage(current, messageId));
             }
+            activeAssistantId = '';
             if (payload.sessions) setSessions(payload.sessions);
           }
         }
@@ -120,15 +122,26 @@ export default function Home() {
   }
 
   return (
+    <ProtectedRoute>
     <main className="app-shell">
       <BackgroundEffects />
       <div className="tech-grid-bg" />
       <div className="ambient-glow" />
-      <SessionSidebar sessions={sessions} activeSessionId={threadId} footerPlan={activeModelLabel} onSelect={(sessionId) => void loadThread(sessionId)} onNew={() => { setThreadId(''); setMessages([]); }} />
+      <SessionSidebar
+        sessions={sessions}
+        activeSessionId={threadId}
+        footerName={user?.name || 'Authenticated User'}
+        footerPlan={user?.email || 'Email / GitHub'}
+        onSelect={(sessionId) => void loadThread(sessionId)}
+        onNew={() => {
+          setThreadId('');
+          setMessages([]);
+        }}
+      />
       <section className="app-main">
-        <ChatHeader />
+        <ChatHeader onSignOut={() => void signOut()} />
         <div className="app-content">
-          <MessageList messages={messages} onSuggestion={(prompt) => void sendMessage(prompt)} />
+          <MessageList messages={messages} onSuggestion={(prompt) => void sendMessage(prompt, [])} />
           <div className="app-input-wrap">
             <ChatInput
               disabled={isLoading}
@@ -139,15 +152,12 @@ export default function Home() {
               onSelectAllTools={() => setSelectedToolIds(getDefaultSelectedToolIds(availableTools))}
               onClearAllTools={() => setSelectedToolIds([])}
               modelId={modelId}
-              onModelChange={(value) => {
-                setModelId(value);
-                const nextModel = modelOptions.find((option) => option.id === value);
-                if (nextModel) setActiveModelLabel(nextModel.name);
-              }}
+              onModelChange={setModelId}
             />
           </div>
         </div>
       </section>
     </main>
+    </ProtectedRoute>
   );
 }

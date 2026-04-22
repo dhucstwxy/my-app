@@ -13,7 +13,7 @@ import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { resolveModel } from '@/app/agent/config/models.config';
 import { createLangChainTools } from '@/app/agent/config/unified-tools.config';
 import { createModel } from '@/app/agent/utils/models';
-import type { ToolCallRecord } from '@/app/types/chat';
+import type { AttachmentMeta, ToolCallRecord } from '@/app/types/chat';
 
 const checkpointer = new MemorySaver();
 
@@ -26,6 +26,28 @@ function shouldContinue(state: typeof MessagesAnnotation.State) {
     }
   }
   return END;
+}
+
+function formatAttachmentContext(attachments?: AttachmentMeta[]) {
+  if (!attachments || attachments.length === 0) return '';
+  const lines = attachments.map((attachment) => `- ${attachment.name} (${attachment.type})`);
+  return `\n\n[附件信息]\n${lines.join('\n')}\n当前课程先打通上传与上下文透传，后面课程再接入更完整的多模态解析。`;
+}
+
+function buildUserContent(message: string, attachments?: AttachmentMeta[]) {
+  const imageAttachments = (attachments ?? []).filter((attachment) => typeof attachment.dataUrl === 'string' && attachment.dataUrl.startsWith('data:image/'));
+  if (imageAttachments.length === 0) {
+    return `${message}${formatAttachmentContext(attachments)}`;
+  }
+  return [
+    { type: 'text' as const, text: message },
+    ...imageAttachments.map((attachment) => ({
+      type: 'image_url' as const,
+      image_url: {
+        url: attachment.dataUrl as string,
+      },
+    })),
+  ];
 }
 
 function buildChatApp(modelId?: string, toolIds?: string[]) {
@@ -90,22 +112,33 @@ function normalizeArgs(args: Record<string, unknown> | undefined) {
   return next;
 }
 
-function stringifyToolOutput(output: unknown) {
-  if (typeof output === 'string') return output;
-  if (output && typeof output === 'object' && 'content' in output) {
-    const content = (output as { content?: unknown }).content;
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      return content
-        .map((item) => (item && typeof item === 'object' && 'text' in item ? String((item as { text?: unknown }).text ?? '') : ''))
-        .join('');
+function parseToolOutput(output: unknown) {
+  const emptyResult = { output: JSON.stringify(output) };
+  if (typeof output === 'string') {
+    try {
+      const parsed = JSON.parse(output) as { output?: unknown; imageUrl?: unknown };
+      if (parsed && typeof parsed === 'object') {
+        return {
+          output: typeof parsed.output === 'string' ? parsed.output : output,
+          imageUrl: typeof parsed.imageUrl === 'string' ? parsed.imageUrl : undefined,
+        };
+      }
+    } catch {}
+    return { output };
+  }
+  if (output && typeof output === 'object') {
+    const candidate = output as { content?: unknown; output?: unknown; imageUrl?: unknown };
+    if (typeof candidate.output === 'string' || typeof candidate.imageUrl === 'string') {
+      return {
+        output: typeof candidate.output === 'string' ? candidate.output : JSON.stringify(candidate.output ?? ''),
+        imageUrl: typeof candidate.imageUrl === 'string' ? candidate.imageUrl : undefined,
+      };
+    }
+    if (typeof candidate.content === 'string') {
+      return { output: candidate.content };
     }
   }
-  if (output && typeof output === 'object' && 'output' in output) {
-    const nested = (output as { output?: unknown }).output;
-    return typeof nested === 'string' ? nested : JSON.stringify(nested);
-  }
-  return JSON.stringify(output);
+  return emptyResult;
 }
 
 export function getChatApp(modelId?: string, toolIds?: string[]) {
@@ -117,12 +150,13 @@ export function getChatApp(modelId?: string, toolIds?: string[]) {
   return nextApp;
 }
 
-export async function* streamChat(message: string, threadId: string, modelId?: string, toolIds?: string[]) {
+export async function* streamChat(message: string, threadId: string, modelId?: string, toolIds?: string[], attachments?: AttachmentMeta[]) {
   const app = getChatApp(modelId, toolIds);
   const pendingToolCalls = new Map<string, ToolCallRecord>();
+  const content = buildUserContent(message, attachments);
 
   for await (const event of app.streamEvents(
-    { messages: [new HumanMessage(message)] },
+    { messages: [new HumanMessage(content)] },
     { version: 'v2', configurable: { thread_id: threadId } }
   )) {
     if (event.event === 'on_chat_model_stream') {
@@ -155,6 +189,7 @@ export async function* streamChat(message: string, threadId: string, modelId?: s
     if (event.event === 'on_tool_end') {
       const eventData = event.data as { tool_call_id?: string; toolCallId?: string; output?: unknown } | undefined;
       const toolCallId = eventData?.tool_call_id ?? eventData?.toolCallId;
+      const toolOutput = parseToolOutput(eventData?.output ?? event.data);
       const existingToolCall = toolCallId ? pendingToolCalls.get(toolCallId) : undefined;
       const toolCall = existingToolCall ?? {
         id: toolCallId || `tool-${Date.now()}`,
@@ -165,7 +200,7 @@ export async function* streamChat(message: string, threadId: string, modelId?: s
         type: 'tool',
         toolCall: {
           ...toolCall,
-          output: stringifyToolOutput(eventData?.output ?? event.data),
+          ...toolOutput,
         },
       } as const;
     }

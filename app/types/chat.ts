@@ -2,6 +2,13 @@ import { isBaseMessage, mapStoredMessageToChatMessage, type BaseMessage, type St
 
 export type ChatRole = 'user' | 'assistant';
 
+export interface AttachmentMeta {
+  name: string;
+  type: string;
+  preview?: string;
+  dataUrl?: string;
+}
+
 export interface ToolCallRecord {
   id: string;
   name: string;
@@ -15,6 +22,7 @@ export interface ChatMessage {
   content: string;
   loading: boolean;
   toolCalls?: ToolCallRecord[];
+  attachments?: AttachmentMeta[];
 }
 
 export interface ChatSession {

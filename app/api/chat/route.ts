@@ -34,9 +34,5 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(await getChatHistory(threadId));
   }
 
-  return NextResponse.json({
-    name: 'lesson-09-model-switching-and-provider',
-    status: 'ok',
-    ...getChatBootstrap(),
-  });
+  return NextResponse.json(await getChatBootstrap());
 }

@@ -4,13 +4,12 @@ import type { ChatSession } from '@/app/types/chat';
 interface SessionSidebarProps {
   sessions: ChatSession[];
   activeSessionId: string;
-  footerName: string;
   footerPlan: string;
   onSelect: (sessionId: string) => void;
   onNew: () => void;
 }
 
-export function SessionSidebar({ sessions, activeSessionId, footerName, footerPlan, onSelect, onNew }: SessionSidebarProps) {
+export function SessionSidebar({ sessions, activeSessionId, footerPlan, onSelect, onNew }: SessionSidebarProps) {
   return (
     <aside className="sidebar glass-panel">
       <div className="sidebar-logo">
@@ -58,7 +57,7 @@ export function SessionSidebar({ sessions, activeSessionId, footerName, footerPl
             <div className="sidebar-avatar-status" />
           </div>
           <div>
-            <div className="sidebar-user-name">{footerName}</div>
+            <div className="sidebar-user-name">Dev User</div>
             <div className="sidebar-user-plan">{footerPlan}</div>
           </div>
         </div>

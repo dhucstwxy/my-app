@@ -13,8 +13,6 @@ import { SessionSidebar } from './components/SessionSidebar';
 import type { AttachmentMeta, ChatMessage, ChatSession, ToolCallRecord } from './types/chat';
 import { getDefaultSelectedToolIds, toggleToolSelection } from './utils/tool-selection';
 
-// 主页面的大部分聊天逻辑沿用上一课；
-// 这一课新增的重点是把整页包进认证上下文与受保护路由。
 function appendAssistantMessage(messages: ChatMessage[], messageId: string, delta: string): ChatMessage[] {
   const withPlaceholder = ensureAssistantMessage(messages, messageId);
   return withPlaceholder.map((message) => message.id === messageId ? { ...message, content: `${message.content}${delta}`, loading: false } : message);
@@ -27,11 +25,44 @@ function ensureAssistantMessage(messages: ChatMessage[], messageId: string): Cha
 }
 
 function finishAssistantMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
-  return messages.map((message) => (message.id === messageId ? { ...message, loading: false } : message));
+  return messages.map((message) => {
+    if (message.id !== messageId) {
+      return message;
+    }
+
+    const markdownSnippets = (message.toolCalls ?? [])
+      .map((toolCall) => toolCall.markdown)
+      .filter((snippet): snippet is string => typeof snippet === 'string' && snippet.length > 0)
+      .filter((snippet) => !message.content.includes(snippet));
+
+    const extraContent = markdownSnippets.length > 0 ? `\n\n${markdownSnippets.join('\n\n')}` : '';
+
+    return {
+      ...message,
+      content: `${message.content}${extraContent}`,
+      loading: false,
+    };
+  });
 }
 
 function attachToolCall(messages: ChatMessage[], messageId: string, toolCall: ToolCallRecord): ChatMessage[] {
-  return messages.map((message) => message.id === messageId ? { ...message, toolCalls: [...(message.toolCalls ?? []), toolCall] } : message);
+  return messages.map((message) => {
+    if (message.id !== messageId) {
+      return message;
+    }
+
+    const existingToolCalls = message.toolCalls ?? [];
+    const existingIndex = existingToolCalls.findIndex((item) => item.id === toolCall.id);
+
+    if (existingIndex === -1) {
+      return { ...message, toolCalls: [...existingToolCalls, toolCall] };
+    }
+
+    return {
+      ...message,
+      toolCalls: existingToolCalls.map((item, index) => (index === existingIndex ? { ...item, ...toolCall } : item)),
+    };
+  });
 }
 
 export default function Home() {
@@ -127,17 +158,7 @@ export default function Home() {
       <BackgroundEffects />
       <div className="tech-grid-bg" />
       <div className="ambient-glow" />
-      <SessionSidebar
-        sessions={sessions}
-        activeSessionId={threadId}
-        footerName={user?.name || 'Authenticated User'}
-        footerPlan={user?.email || 'Email / GitHub'}
-        onSelect={(sessionId) => void loadThread(sessionId)}
-        onNew={() => {
-          setThreadId('');
-          setMessages([]);
-        }}
-      />
+      <SessionSidebar sessions={sessions} activeSessionId={threadId} footerPlan={`${user?.name || 'User'} / Image Tool`} onSelect={(sessionId) => void loadThread(sessionId)} onNew={() => { setThreadId(''); setMessages([]); }} />
       <section className="app-main">
         <ChatHeader onSignOut={() => void signOut()} />
         <div className="app-content">

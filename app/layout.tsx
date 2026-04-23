@@ -3,8 +3,8 @@ import './globals.css';
 import { AuthProvider } from './contexts/AuthContext';
 
 export const metadata: Metadata = {
-  title: '第 11 课：用户认证',
-  description: '为应用接入用户体系。',
+  title: '第 13 课：Google 图片生成工具',
+  description: '实现一个完整的高级工具案例。',
 };
 
 export default function RootLayout({

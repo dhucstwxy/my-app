@@ -8,14 +8,24 @@ import {
   type BaseMessage,
   type StoredMessage,
 } from '@langchain/core/messages';
-import { END, MemorySaver, MessagesAnnotation, START, StateGraph } from '@langchain/langgraph';
+import { END, MessagesAnnotation, START, StateGraph } from '@langchain/langgraph';
 import { ToolNode } from '@langchain/langgraph/prebuilt';
+import { SupabaseSaver } from '@skroyc/langgraph-supabase-checkpointer';
 import { resolveModel } from '@/app/agent/config/models.config';
 import { createLangChainTools } from '@/app/agent/config/unified-tools.config';
 import { createModel } from '@/app/agent/utils/models';
+import { supabase } from '@/app/database/supabase';
 import type { AttachmentMeta, ToolCallRecord } from '@/app/types/chat';
 
-const checkpointer = new MemorySaver();
+let checkpointer: SupabaseSaver | null = null;
+
+function getCheckpointer() {
+  if (!checkpointer) {
+    checkpointer = new SupabaseSaver(supabase);
+  }
+
+  return checkpointer;
+}
 
 function shouldContinue(state: typeof MessagesAnnotation.State) {
   const lastMessage = state.messages[state.messages.length - 1];
@@ -31,7 +41,7 @@ function shouldContinue(state: typeof MessagesAnnotation.State) {
 function formatAttachmentContext(attachments?: AttachmentMeta[]) {
   if (!attachments || attachments.length === 0) return '';
   const lines = attachments.map((attachment) => `- ${attachment.name} (${attachment.type})`);
-  return `\n\n[附件信息]\n${lines.join('\n')}\n当前课程先打通上传与上下文透传，后面课程再接入更完整的多模态解析。`;
+  return `\n\n[附件信息]\n${lines.join('\n')}\n图片工具课仍保留本地 SVG 结果，真实模型只负责决定何时调用工具。`;
 }
 
 function buildUserContent(message: string, attachments?: AttachmentMeta[]) {
@@ -68,7 +78,7 @@ function buildChatApp(modelId?: string, toolIds?: string[]) {
     })
     .addEdge('tools', 'chatbot');
 
-  return workflow.compile({ checkpointer });
+  return workflow.compile({ checkpointer: getCheckpointer() });
 }
 
 const appCache = new Map<string, ReturnType<typeof buildChatApp>>();
@@ -112,30 +122,42 @@ function normalizeArgs(args: Record<string, unknown> | undefined) {
   return next;
 }
 
-function parseToolOutput(output: unknown) {
-  const emptyResult = { output: JSON.stringify(output) };
-  if (typeof output === 'string') {
+interface ParsedToolOutput {
+  output: string;
+  imageUrl?: string;
+  markdown?: string;
+}
+
+function parseToolOutput(output: unknown): ParsedToolOutput {
+  const emptyResult: ParsedToolOutput = { output: JSON.stringify(output) };
+  function parseStructuredString(value: string) {
     try {
-      const parsed = JSON.parse(output) as { output?: unknown; imageUrl?: unknown };
+      const parsed = JSON.parse(value) as { output?: unknown; imageUrl?: unknown; markdown?: unknown };
       if (parsed && typeof parsed === 'object') {
         return {
-          output: typeof parsed.output === 'string' ? parsed.output : output,
+          output: typeof parsed.output === 'string' ? parsed.output : value,
           imageUrl: typeof parsed.imageUrl === 'string' ? parsed.imageUrl : undefined,
+          markdown: typeof parsed.markdown === 'string' ? parsed.markdown : undefined,
         };
       }
     } catch {}
-    return { output };
+    return { output: value };
+  }
+
+  if (typeof output === 'string') {
+    return parseStructuredString(output);
   }
   if (output && typeof output === 'object') {
-    const candidate = output as { content?: unknown; output?: unknown; imageUrl?: unknown };
-    if (typeof candidate.output === 'string' || typeof candidate.imageUrl === 'string') {
+    const candidate = output as { content?: unknown; output?: unknown; imageUrl?: unknown; markdown?: unknown };
+    if (typeof candidate.output === 'string' || typeof candidate.imageUrl === 'string' || typeof candidate.markdown === 'string') {
       return {
         output: typeof candidate.output === 'string' ? candidate.output : JSON.stringify(candidate.output ?? ''),
         imageUrl: typeof candidate.imageUrl === 'string' ? candidate.imageUrl : undefined,
+        markdown: typeof candidate.markdown === 'string' ? candidate.markdown : undefined,
       };
     }
     if (typeof candidate.content === 'string') {
-      return { output: candidate.content };
+      return parseStructuredString(candidate.content);
     }
   }
   return emptyResult;
@@ -154,6 +176,14 @@ export async function* streamChat(message: string, threadId: string, modelId?: s
   const app = getChatApp(modelId, toolIds);
   const pendingToolCalls = new Map<string, ToolCallRecord>();
   const content = buildUserContent(message, attachments);
+  const streamStartedAt = Date.now();
+
+  console.log('[lesson-13][streamChat] start', {
+    threadId,
+    modelId: modelId || resolveModel().id,
+    toolIds,
+    hasAttachments: (attachments?.length || 0) > 0,
+  });
 
   for await (const event of app.streamEvents(
     { messages: [new HumanMessage(content)] },
@@ -177,11 +207,22 @@ export async function* streamChat(message: string, threadId: string, modelId?: s
     if (event.event === 'on_chat_model_end') {
       const toolCalls = event.data?.output?.tool_calls;
       for (const toolCall of toolCalls ?? []) {
-        pendingToolCalls.set(toolCall.id, {
+        const pendingToolCall = {
           id: toolCall.id,
           name: toolCall.name,
           args: normalizeArgs(toolCall.args),
+        };
+        pendingToolCalls.set(toolCall.id, pendingToolCall);
+        console.log('[lesson-13][streamChat] tool-call', {
+          threadId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          args: normalizeArgs(toolCall.args),
         });
+        yield {
+          type: 'tool',
+          toolCall: pendingToolCall,
+        } as const;
       }
       continue;
     }
@@ -196,6 +237,13 @@ export async function* streamChat(message: string, threadId: string, modelId?: s
         name: event.name || 'tool',
         args: {},
       };
+      console.log('[lesson-13][streamChat] tool-end', {
+        threadId,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        durationSinceStreamStartMs: Date.now() - streamStartedAt,
+        hasImageUrl: typeof toolOutput.imageUrl === 'string',
+      });
       yield {
         type: 'tool',
         toolCall: {
@@ -205,4 +253,9 @@ export async function* streamChat(message: string, threadId: string, modelId?: s
       } as const;
     }
   }
+
+  console.log('[lesson-13][streamChat] complete', {
+    threadId,
+    totalDurationMs: Date.now() - streamStartedAt,
+  });
 }

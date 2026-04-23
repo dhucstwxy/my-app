@@ -2,12 +2,11 @@
 
 import { ArrowUp, LoaderCircle, Plus, X } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { type ToolOption } from '@/app/agent/config/unified-tools.config';
+import type { ToolOption } from '@/app/agent/config/unified-tools.config';
 import type { AttachmentMeta } from '@/app/types/chat';
 import { ModelSelector } from './ModelSelector';
 import { ToolPanel } from './ToolPanel';
 
-// 第十课在输入区增加附件选择、预览与删除能力。
 interface ChatInputProps {
   disabled?: boolean;
   onSend: (message: string, attachments: AttachmentMeta[]) => Promise<void> | void;
@@ -36,7 +35,6 @@ export function ChatInput({ disabled = false, onSend, modelId, onModelChange, to
 
   async function handleSubmit() {
     const next = value.trim();
-    // 有附件时，即使没有显式文本，也允许发送。
     if ((!next && attachments.length === 0) || disabled) return;
     const snapshot = [...attachments];
     setValue('');

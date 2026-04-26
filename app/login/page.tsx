@@ -19,9 +19,7 @@ export default function LoginPage() {
     const params = new URLSearchParams(window.location.search);
     const authError = params.get('authError');
     if (authError) {
-      setTimeout(() => {
-        setError(authError);
-      }, 0);
+      setError(authError);
     }
   }, [isAuthenticated, isLoading, router]);
 

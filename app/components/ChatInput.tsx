@@ -10,16 +10,26 @@ import { ToolPanel } from './ToolPanel';
 interface ChatInputProps {
   disabled?: boolean;
   onSend: (message: string, attachments: AttachmentMeta[]) => Promise<void> | void;
-  modelId: string;
-  onModelChange: (value: string) => void;
   tools: ToolOption[];
   selectedToolIds: string[];
   onToolToggle: (toolId: string) => void;
   onSelectAllTools: () => void;
   onClearAllTools: () => void;
+  modelId: string;
+  onModelChange: (value: string) => void;
 }
 
-export function ChatInput({ disabled = false, onSend, modelId, onModelChange, tools, selectedToolIds, onToolToggle, onSelectAllTools, onClearAllTools }: ChatInputProps) {
+export function ChatInput({
+  disabled = false,
+  onSend,
+  tools,
+  selectedToolIds,
+  onToolToggle,
+  onSelectAllTools,
+  onClearAllTools,
+  modelId,
+  onModelChange,
+}: ChatInputProps) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<AttachmentMeta[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -99,15 +109,7 @@ export function ChatInput({ disabled = false, onSend, modelId, onModelChange, to
           <button className="chat-input-icon-button" type="button" title="上传图片" onClick={() => fileInputRef.current?.click()}>
             <Plus className="h-5 w-5" />
           </button>
-          {tools.length > 0 ? (
-            <ToolPanel
-              tools={tools}
-              selectedToolIds={selectedToolIds}
-              onToggle={onToolToggle}
-              onSelectAll={onSelectAllTools}
-              onClearAll={onClearAllTools}
-            />
-          ) : null}
+          <ToolPanel tools={tools} selectedToolIds={selectedToolIds} onToggle={onToolToggle} onSelectAll={onSelectAllTools} onClearAll={onClearAllTools} />
         </div>
         <div className="chat-input-right">
           <ModelSelector value={modelId} onChange={onModelChange} />

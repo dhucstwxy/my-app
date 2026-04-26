@@ -8,10 +8,21 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
-        for await (const item of streamChatResponse(body)) {
-          controller.enqueue(encoder.encode(formatSse(item.event, item.data)));
+        try {
+          for await (const item of streamChatResponse(body)) {
+            controller.enqueue(encoder.encode(formatSse(item.event, item.data)));
+          }
+          controller.close();
+        } catch (error) {
+          // 流式里抛错时若只 abort，浏览器常见 net::ERR_EMPTY_RESPONSE；发一条 SSE 让前端能显示原因
+          const message = error instanceof Error ? error.message : '服务器内部错误';
+          try {
+            controller.enqueue(encoder.encode(formatSse('error', { message })));
+            controller.close();
+          } catch {
+            controller.error(error instanceof Error ? error : new Error(String(error)));
+          }
         }
-        controller.close();
       },
     });
 

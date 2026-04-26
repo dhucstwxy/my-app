@@ -21,7 +21,6 @@ export function createModel(modelId?: string): ChatGoogleGenerativeAI | ChatOpen
         baseURL: process.env.OPENAI_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       },
       temperature: 0.7,
-      streaming: true,
     });
   }
 
@@ -29,6 +28,5 @@ export function createModel(modelId?: string): ChatGoogleGenerativeAI | ChatOpen
     model: modelName,
     apiKey: requireEnv('GOOGLE_API_KEY'),
     temperature: 0.7,
-    streaming: true,
   });
 }

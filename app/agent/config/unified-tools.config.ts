@@ -22,6 +22,15 @@ export interface ToolOption {
   icon?: string;
 }
 
+const capabilityOptions: ToolOption[] = [
+  {
+    id: 'canvas',
+    name: 'canvas',
+    description: '启用 Canvas 组件生成功能',
+    icon: '🧩',
+  },
+];
+
 export const toolDefinitions: ToolDefinition[] = [
   {
     id: 'google_image_generation',
@@ -66,9 +75,12 @@ export const toolDefinitions: ToolDefinition[] = [
 ];
 
 export function getAvailableToolOptions(): ToolOption[] {
-  return toolDefinitions
-    .filter((tool) => tool.enabled)
-    .map(({ id, name, description, icon }) => ({ id, name, description, icon }));
+  return [
+    ...capabilityOptions,
+    ...toolDefinitions
+      .filter((tool) => tool.enabled)
+      .map(({ id, name, description, icon }) => ({ id, name, description, icon })),
+  ];
 }
 
 export function createLangChainTools(toolIds?: string[]) {

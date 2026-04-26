@@ -1,11 +1,15 @@
 import { supabase } from './supabase';
 
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
 export async function getUserByToken(token: string) {
   return supabase.auth.getUser(token);
 }
 
 export async function signInWithPassword(email: string, password: string) {
-  return supabase.auth.signInWithPassword({ email, password });
+  return supabase.auth.signInWithPassword({ email: normalizeEmail(email), password });
 }
 
 export async function signUpWithEmail(
@@ -15,7 +19,7 @@ export async function signUpWithEmail(
   redirectTo: string
 ) {
   return supabase.auth.signUp({
-    email,
+    email: normalizeEmail(email),
     password,
     options: {
       data: { name },

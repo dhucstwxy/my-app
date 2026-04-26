@@ -1,15 +1,49 @@
 'use client';
 
+import { useEffect, useReducer } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
+import type { CanvasArtifact } from '@/app/canvas/canvas-types';
+import { canvasStore } from '@/app/hooks/useCanvasArtifacts';
+import { CanvasTitleCard } from './canvas/CanvasTitleCard';
 import { ImageCard } from './ImageCard';
 
 interface MarkdownRendererProps {
   content: string;
+  messageId?: string;
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, messageId }: MarkdownRendererProps) {
+  const [, forceUpdate] = useReducer((value) => value + 1, 0);
+
+  useEffect(() => {
+    return canvasStore.subscribe(() => forceUpdate());
+  }, []);
+
+  function getArtifact(artifactId: string): CanvasArtifact {
+    return (
+      (messageId ? canvasStore.getArtifact(messageId, artifactId) : null) ?? {
+        id: artifactId,
+        type: 'react',
+        title: '未命名组件',
+        code: {
+          language: 'jsx',
+          content: '',
+        },
+        status: 'creating',
+        messageId: messageId || '',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+    );
+  }
+
+  function handleOpenArtifact(artifactId: string) {
+    canvasStore.setActiveArtifactId(artifactId);
+    canvasStore.setIsCanvasVisible(true);
+  }
+
   return (
     <div className="markdown-content">
       <ReactMarkdown
@@ -28,12 +62,21 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
                 alt={props.prompt || 'Generated image'}
               />
             ),
+            canvasartifact: ({ node, ...props }: any) => (
+              <CanvasTitleCard
+                key={props.id || 'canvas-artifact'}
+                artifact={getArtifact(props.id || 'canvas-artifact')}
+                onOpen={handleOpenArtifact}
+              />
+            ),
             p: ({ node, children, ...props }: any) => {
-              const hasImageCard = node?.children?.some(
-                (child: any) => child.type === 'element' && child.tagName === 'imagecard',
+              const hasCustomCard = node?.children?.some(
+                (child: any) =>
+                  child.type === 'element' &&
+                  (child.tagName === 'imagecard' || child.tagName === 'canvasartifact'),
               );
 
-              if (hasImageCard) {
+              if (hasCustomCard) {
                 return <div {...props}>{children}</div>;
               }
 

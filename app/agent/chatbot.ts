@@ -13,6 +13,7 @@ import { ToolNode } from '@langchain/langgraph/prebuilt';
 import { SupabaseSaver } from '@skroyc/langgraph-supabase-checkpointer';
 import { resolveModel } from '@/app/agent/config/models.config';
 import { createLangChainTools } from '@/app/agent/config/unified-tools.config';
+import { generateArtifactId, getCanvasSystemPrompt, getToolUsagePrompt } from '@/app/canvas/canvas-prompt';
 import { createModel } from '@/app/agent/utils/models';
 import { supabase } from '@/app/database/supabase';
 import type { AttachmentMeta, ToolCallRecord } from '@/app/types/chat';
@@ -62,11 +63,20 @@ function buildUserContent(message: string, attachments?: AttachmentMeta[]) {
 
 function buildChatApp(modelId?: string, toolIds?: string[]) {
   const tools = createLangChainTools(toolIds);
+  const canvasEnabled = toolIds?.includes('canvas') ?? false;
+  const hasSelectedTools = tools.length > 0;
 
   const workflow = new StateGraph(MessagesAnnotation)
     .addNode('chatbot', async (state) => {
       const model = createModel(modelId);
-      const modelMessages = toModelMessages(state.messages);
+      let modelMessages = toModelMessages(state.messages);
+
+      if (canvasEnabled) {
+        modelMessages = [new SystemMessage(getCanvasSystemPrompt(generateArtifactId())), ...modelMessages];
+      } else if (hasSelectedTools) {
+        modelMessages = [new SystemMessage(getToolUsagePrompt()), ...modelMessages];
+      }
+
       const response = tools.length > 0 ? await model.bindTools(tools).invoke(modelMessages) : await model.invoke(modelMessages);
       return { messages: [response] };
     })

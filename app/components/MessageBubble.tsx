@@ -1,5 +1,6 @@
-import Image from 'next/image';
 import type { ChatMessage } from '@/app/types/chat';
+import { MarkdownRenderer } from './MarkdownRenderer';
+import { ToolCallDisplay } from './ToolCallDisplay';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -17,39 +18,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <div className="attachment-grid">
             {attachments.map((attachment, index) => (
               <div key={`${attachment.name}-${index}`} className="attachment-chip">
-                {attachment.preview ? (
-                  <Image
-                    src={attachment.preview}
-                    alt={attachment.name}
-                    className="attachment-preview"
-                    width={48}
-                    height={48}
-                    unoptimized
-                  />
-                ) : null}
+                {attachment.preview ? <img src={attachment.preview} alt={attachment.name} className="attachment-preview" /> : null}
                 <div className="attachment-name">{attachment.name}</div>
               </div>
             ))}
           </div>
         ) : null}
-        {!isUser && message.toolCalls && message.toolCalls.length > 0 ? (
-          <div className="tool-call-list">
-            {message.toolCalls.map((toolCall) => (
-              <div key={toolCall.id} className="tool-call-item">
-                <div className="tool-call-name">{toolCall.name}</div>
-                <div className="tool-call-output">{toolCall.output}</div>
-              </div>
-            ))}
-          </div>
-        ) : null}
+        {!isUser && message.toolCalls && message.toolCalls.length > 0 ? <ToolCallDisplay toolCalls={message.toolCalls} /> : null}
         {message.loading ? (
           <div className="message-loading" aria-label="Assistant loading">
             <span className="message-loading-dot" />
             <span className="message-loading-dot" />
             <span className="message-loading-dot" />
           </div>
-        ) : (
+        ) : isUser ? (
           <div className="message-content">{message.content}</div>
+        ) : (
+          <MarkdownRenderer content={message.content} messageId={message.id} />
         )}
       </div>
     </div>

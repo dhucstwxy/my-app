@@ -1,21 +1,25 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ToolOption } from './agent/config/unified-tools.config';
+import { parseCanvasArtifactsFromContent } from './canvas/parse-canvas-artifacts';
 import { modelOptions } from './agent/config/models.config';
 import { BackgroundEffects } from './components/BackgroundEffects';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { useAuth } from './contexts/AuthContext';
 import { ChatHeader } from './components/ChatHeader';
 import { ChatInput } from './components/ChatInput';
+import { CanvasPanel } from './components/canvas/CanvasPanel';
 import { MessageList } from './components/MessageList';
+import { ResizablePanel } from './components/ResizablePanel';
 import { SessionSidebar } from './components/SessionSidebar';
+import { canvasStore } from './hooks/useCanvasArtifacts';
 import type { AttachmentMeta, ChatMessage, ChatSession, ToolCallRecord } from './types/chat';
 import { getDefaultSelectedToolIds, toggleToolSelection } from './utils/tool-selection';
 
 function appendAssistantMessage(messages: ChatMessage[], messageId: string, delta: string): ChatMessage[] {
   const withPlaceholder = ensureAssistantMessage(messages, messageId);
-  return withPlaceholder.map((message) => message.id === messageId ? { ...message, content: `${message.content}${delta}`, loading: false } : message);
+  return withPlaceholder.map((message) => (message.id === messageId ? { ...message, content: `${message.content}${delta}`, loading: false } : message));
 }
 
 function ensureAssistantMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
@@ -74,7 +78,15 @@ export default function Home() {
   const [threadId, setThreadId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [modelId, setModelId] = useState(modelOptions[0].id);
-  const [activeModelLabel, setActiveModelLabel] = useState(modelOptions[0].name);
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
+  const [isCanvasVisible, setIsCanvasVisible] = useState(false);
+  const [canvasVersion, setCanvasVersion] = useState(0);
+  const [canvasWidth, setCanvasWidth] = useState(560);
+
+  const activeArtifact = useMemo(
+    () => (activeArtifactId ? canvasStore.getArtifactById(activeArtifactId) : null),
+    [activeArtifactId, canvasVersion],
+  );
 
   useEffect(() => {
     async function loadInitialData() {
@@ -89,6 +101,54 @@ export default function Home() {
 
     void loadInitialData();
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = canvasStore.subscribe(() => {
+      const artifact = canvasStore.getActiveArtifact();
+      setActiveArtifactId(artifact?.id ?? null);
+      setIsCanvasVisible(canvasStore.getIsCanvasVisible());
+      setCanvasVersion((current) => current + 1);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    const artifacts = messages.flatMap((message) =>
+      message.role === 'assistant' ? parseCanvasArtifactsFromContent(message.id, message.content, threadId) : [],
+    );
+    canvasStore.replaceArtifacts(artifacts);
+  }, [messages, threadId]);
+
+  useEffect(() => {
+    const storedWidth = window.localStorage.getItem('lesson15-canvas-width');
+    if (storedWidth) {
+      const parsed = Number.parseInt(storedWidth, 10);
+      if (!Number.isNaN(parsed)) {
+        setCanvasWidth(parsed);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!threadId) return;
+
+    async function loadArtifacts() {
+      const response = await fetch(`/api/artifacts?session_id=${threadId}`);
+      if (!response.ok) return;
+      const data = (await response.json()) as { artifacts?: Array<any> };
+      const artifacts = Array.isArray(data.artifacts)
+        ? data.artifacts.map((artifact) => ({
+            ...artifact,
+            createdAt: new Date(artifact.createdAt),
+            updatedAt: new Date(artifact.updatedAt),
+          }))
+        : [];
+      canvasStore.mergeArtifacts(artifacts);
+    }
+
+    void loadArtifacts();
+  }, [threadId]);
 
   async function loadThread(nextThreadId: string) {
     const response = await fetch(`/api/chat?thread_id=${nextThreadId}`);
@@ -105,7 +165,11 @@ export default function Home() {
     setMessages([...history, userMessage]);
     setIsLoading(true);
     try {
-      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: content, messages: history, threadId, modelId, attachments, toolIds: selectedToolIds }) });
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content, messages: history, threadId, modelId, attachments, toolIds: selectedToolIds }),
+      });
       if (!response.ok || !response.body) throw new Error('流式聊天请求失败');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -123,21 +187,36 @@ export default function Home() {
           const dataLine = lines.find((line) => line.startsWith('data:'))?.replace('data:', '').trim();
           if (!eventName || !dataLine) continue;
           const payload = JSON.parse(dataLine) as any;
+          if (eventName === 'error') {
+            const msg = typeof payload?.message === 'string' ? payload.message : '服务器返回错误';
+            setMessages((current) => [
+              ...current,
+              {
+                id: `assistant-error-${Date.now()}`,
+                role: 'assistant' as const,
+                content: `请求失败：${msg}`,
+                loading: false,
+              },
+            ]);
+            continue;
+          }
           if (eventName === 'session.start') {
             if (payload.threadId) setThreadId(payload.threadId);
             if (payload.sessions) setSessions(payload.sessions);
           }
-          if (eventName === 'model.selected') setActiveModelLabel(payload.name);
           if (eventName === 'message.start' && payload.id) {
             activeAssistantId = payload.id;
             setMessages((current) => ensureAssistantMessage(current, activeAssistantId));
           }
-          if (eventName === 'tool.call' && activeAssistantId) setMessages((current) => attachToolCall(current, activeAssistantId, payload as ToolCallRecord));
-          if (eventName === 'message.delta' && payload.id) setMessages((current) => appendAssistantMessage(current, payload.id, payload.delta ?? ''));
+          if (eventName === 'tool.call' && activeAssistantId) {
+            setMessages((current) => attachToolCall(current, activeAssistantId, payload as ToolCallRecord));
+          }
+          if (eventName === 'message.delta' && payload.id) {
+            setMessages((current) => appendAssistantMessage(current, payload.id, payload.delta ?? ''));
+          }
           if (eventName === 'message.end') {
             if (payload.id) {
-              const messageId = payload.id;
-              setMessages((current) => finishAssistantMessage(current, messageId));
+              setMessages((current) => finishAssistantMessage(current, payload.id));
             }
             activeAssistantId = '';
             if (payload.sessions) setSessions(payload.sessions);
@@ -145,7 +224,12 @@ export default function Home() {
         }
       }
     } catch (error) {
-      const fallback: ChatMessage = { id: `assistant-error-${Date.now()}`, role: 'assistant', content: error instanceof Error ? `请求失败：${error.message}` : '请求失败：未知错误', loading: false };
+      const fallback: ChatMessage = {
+        id: `assistant-error-${Date.now()}`,
+        role: 'assistant',
+        content: error instanceof Error ? `请求失败：${error.message}` : '请求失败：未知错误',
+        loading: false,
+      };
       setMessages((current) => [...current, fallback]);
     } finally {
       setIsLoading(false);
@@ -154,31 +238,59 @@ export default function Home() {
 
   return (
     <ProtectedRoute>
-    <main className="app-shell">
-      <BackgroundEffects />
-      <div className="tech-grid-bg" />
-      <div className="ambient-glow" />
-      <SessionSidebar sessions={sessions} activeSessionId={threadId} footerPlan={`${user?.name || 'User'} / Image Tool`} onSelect={(sessionId) => void loadThread(sessionId)} onNew={() => { setThreadId(''); setMessages([]); }} />
-      <section className="app-main">
-        <ChatHeader onSignOut={() => void signOut()} />
-        <div className="app-content">
-          <MessageList messages={messages} onSuggestion={(prompt) => void sendMessage(prompt, [])} />
-          <div className="app-input-wrap">
-            <ChatInput
-              disabled={isLoading}
-              onSend={sendMessage}
-              tools={availableTools}
-              selectedToolIds={selectedToolIds}
-              onToolToggle={(toolId) => setSelectedToolIds((current) => toggleToolSelection(current, toolId))}
-              onSelectAllTools={() => setSelectedToolIds(getDefaultSelectedToolIds(availableTools))}
-              onClearAllTools={() => setSelectedToolIds([])}
-              modelId={modelId}
-              onModelChange={setModelId}
-            />
+      <main className="app-shell">
+        <BackgroundEffects />
+        <div className="tech-grid-bg" />
+        <div className="ambient-glow" />
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={threadId}
+          footerPlan={`${user?.name || 'User'} / Custom Rendering`}
+          onSelect={(sessionId) => void loadThread(sessionId)}
+          onNew={() => {
+            setThreadId('');
+            setMessages([]);
+            canvasStore.clear();
+          }}
+        />
+        <section className="app-main">
+          <ChatHeader onSignOut={() => void signOut()} />
+          <div className="app-content">
+            <MessageList messages={messages} onSuggestion={(prompt) => void sendMessage(prompt, [])} />
+            <div className="app-input-wrap">
+              <ChatInput
+                disabled={isLoading}
+                onSend={sendMessage}
+                tools={availableTools}
+                selectedToolIds={selectedToolIds}
+                onToolToggle={(toolId) => setSelectedToolIds((current) => toggleToolSelection(current, toolId))}
+                onSelectAllTools={() => setSelectedToolIds(getDefaultSelectedToolIds(availableTools))}
+                onClearAllTools={() => setSelectedToolIds([])}
+                modelId={modelId}
+                onModelChange={setModelId}
+              />
+            </div>
           </div>
-        </div>
-      </section>
-    </main>
+        </section>
+        {isCanvasVisible ? (
+          <ResizablePanel
+            defaultWidth={canvasWidth}
+            onWidthChange={(nextWidth) => {
+              setCanvasWidth(nextWidth);
+              window.localStorage.setItem('lesson15-canvas-width', String(nextWidth));
+            }}
+          >
+            <CanvasPanel
+              artifact={activeArtifact}
+              isVisible={isCanvasVisible}
+              onClose={() => {
+                canvasStore.setIsCanvasVisible(false);
+                canvasStore.setActiveArtifactId(null);
+              }}
+            />
+          </ResizablePanel>
+        ) : null}
+      </main>
     </ProtectedRoute>
   );
 }

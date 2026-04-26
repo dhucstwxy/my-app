@@ -4,12 +4,9 @@ interface EmptyStateProps {
   onAction: (prompt: string) => void;
 }
 
-// 空状态从“课程介绍”升级为“可点击的引导入口”，
-// 这样页面一加载就能直接触发示例提问。
 export function EmptyState({ onAction }: EmptyStateProps) {
   return (
     <div className="empty-state">
-      {/* 这套视觉骨架承接第一课，直观展示 UI 复用而能力逐课增强。 */}
       <div className="empty-state-orbit">
         <div className="empty-state-orbit-ring animate-spin-slow" />
         <div className="empty-state-orbit-ring inner animate-spin-reverse" />
@@ -29,7 +26,6 @@ export function EmptyState({ onAction }: EmptyStateProps) {
       </p>
 
       <div className="empty-state-grid">
-        {/* 第一张卡把推荐提示词直接绑定到点击事件上，帮助验证链路是否打通。 */}
         <button className="feature-card feature-button" onClick={() => onAction('LangGraph 的最小聊天工作流是怎么跑起来的？')}>
           <div className="feature-card-icon blue">
             <Network className="h-5 w-5" />
@@ -40,7 +36,6 @@ export function EmptyState({ onAction }: EmptyStateProps) {
           </div>
         </button>
 
-        {/* 第二张卡把视角切到“课程实现”和“源项目映射”的对应关系。 */}
         <button className="feature-card feature-button" onClick={() => onAction('这一课实现的页面，和完整项目首页之间是什么关系？')}>
           <div className="feature-card-icon cyan">
             <Atom className="h-5 w-5" />

@@ -3,8 +3,8 @@ import './globals.css';
 import { AuthProvider } from './contexts/AuthContext';
 
 export const metadata: Metadata = {
-  title: '第 13 课：Google 图片生成工具',
-  description: '实现一个完整的高级工具案例。',
+  title: '第 15 课：自定义渲染与交互',
+  description: '在已有 Canvas 协议上，只升级预览、编辑、渲染策略与交互体验。',
 };
 
 export default function RootLayout({

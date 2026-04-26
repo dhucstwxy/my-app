@@ -13,15 +13,26 @@ const COOKIE_OPTIONS = {
 export async function POST(request: NextRequest) {
   try {
     const { email, password } = await request.json() as { email?: string; password?: string };
+    const normalizedEmail = email?.trim().toLowerCase();
 
-    if (!email || !password) {
+    if (!normalizedEmail || !password) {
       return NextResponse.json({ error: '请填写邮箱和密码' }, { status: 400 });
     }
 
-    const { data, error } = await signInWithPassword(email, password);
+    const { data, error } = await signInWithPassword(normalizedEmail, password);
 
     if (error || !data.user || !data.session?.access_token) {
-      return NextResponse.json({ error: '邮箱或密码错误' }, { status: 401 });
+      const message = error?.message?.toLowerCase() || '';
+
+      if (message.includes('email not confirmed') || message.includes('email_not_confirmed')) {
+        return NextResponse.json({ error: '邮箱尚未验证，请先完成邮件验证' }, { status: 401 });
+      }
+
+      if (message.includes('invalid login credentials') || message.includes('invalid_credentials')) {
+        return NextResponse.json({ error: '邮箱或密码错误' }, { status: 401 });
+      }
+
+      return NextResponse.json({ error: error?.message || '登录失败，请重试' }, { status: 401 });
     }
 
     const response = NextResponse.json({
